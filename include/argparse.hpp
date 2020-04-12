@@ -858,7 +858,7 @@ public:
     if (tIterator != mArgumentMap.end()) {
       return *(tIterator->second);
     }
-    throw std::logic_error("No such argument");
+    throw std::logic_error("No argument \"" + std::string{aArgumentName} + "\"");
   }
 
   // Print help message

@@ -836,7 +836,18 @@ public:
    * @throws std::bad_any_cast if the option is not of type T
    */
   template <typename T = std::string> T get(std::string_view aArgumentName) {
-    return (*this)[aArgumentName].get<T>();
+    try {
+      return (*this)[aArgumentName].get<T>();
+    }
+    catch (std::logic_error& e)
+    {
+        throw std::logic_error(std::string(e.what()) + " of option \"" + std::string{aArgumentName} + "\"");
+    }
+    catch (std::bad_any_cast& e)
+    {
+        // Ugh, cannot seem to construct another bad_any_cast.
+        throw std::logic_error(std::string(e.what()) + " of option \"" + std::string{aArgumentName} + "\"");
+    }
   }
 
   /* Getter for options without default values.

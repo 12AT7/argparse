@@ -288,8 +288,13 @@ public:
     return *this;
   }
 
-  Argument &default_value(std::any aDefaultValue) {
-    mDefaultValue = std::move(aDefaultValue);
+  // Force the explicit provision of the argument type.  The T here and the
+  // subsequent get<T>(...) must be the same type, and the resulting
+  // std::bad_any_cast is more time consuming to find and debug that just
+  // providing the exact type in both places.
+  template <typename T>
+  Argument &default_value(std::common_type_t<T> aDefaultValue) {
+    mDefaultValue = std::any(aDefaultValue);
     return *this;
   }
 

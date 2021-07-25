@@ -7,7 +7,8 @@
 
 Licensed under the MIT License <http://opensource.org/licenses/MIT>.
 SPDX-License-Identifier: MIT
-Copyright (c) 2019 Pranav Srinivas Kumar <pranav.srinivas.kumar@gmail.com>.
+Copyright (c) 2019-2021 Pranav Srinivas Kumar <pranav.srinivas.kumar@gmail.com>
+and other contributors.
 
 Permission is hereby  granted, free of charge, to any  person obtaining a copy
 of this software and associated  documentation files (the "Software"), to deal
@@ -53,27 +54,73 @@ namespace argparse {
 
 namespace details { // namespace for helper methods
 
-template <typename... Ts> struct is_container_helper {};
-
-template <typename T, typename _ = void>
+template <typename T, typename = void>
 struct is_container : std::false_type {};
 
 template <> struct is_container<std::string> : std::false_type {};
 
 template <typename T>
-struct is_container<
-    T,
-    std::conditional_t<false,
-                       is_container_helper<typename T::value_type,
-                                           decltype(std::declval<T>().begin()),
-                                           decltype(std::declval<T>().end()),
-                                           decltype(std::declval<T>().size())>,
-                       void>> : std::true_type {};
+struct is_container<T, std::void_t<typename T::value_type,
+                                   decltype(std::declval<T>().begin()),
+                                   decltype(std::declval<T>().end()),
+                                   decltype(std::declval<T>().size())>>
+  : std::true_type {};
 
 template <typename T>
 static constexpr bool is_container_v = is_container<T>::value;
 
+template <typename T, typename = void>
+struct is_streamable : std::false_type {};
+
+template <typename T>
+struct is_streamable<
+    T, std::void_t<decltype(std::declval<std::ostream&>() << std::declval<T>())>>
+  : std::true_type {};
+
+template <typename T>
+static constexpr bool is_streamable_v = is_streamable<T>::value;
+
+template <typename T>
+static constexpr bool is_representable_v =
+    is_streamable_v<T> || is_container_v<T>;
+
+constexpr size_t repr_max_container_size = 5;
+
+template <typename T> std::string repr(T const &val) {
+  if constexpr (std::is_same_v<T, bool>) {
+    return val ? "true" : "false";
+  } else if constexpr (std::is_convertible_v<T, std::string_view>) {
+    return '"' + std::string{std::string_view{val}} + '"';
+  } else if constexpr (is_container_v<T>) {
+    std::stringstream out;
+    out << "{";
+    const auto size = val.size();
+    if (size > 1) {
+      out << repr(*val.begin());
+      std::for_each(
+          std::next(val.begin()),
+          std::next(val.begin(), std::min(size, repr_max_container_size) - 1),
+          [&out](const auto &v) { out << " " << repr(v); });
+      if (size <= repr_max_container_size)
+        out << " ";
+      else
+        out << "...";
+    }
+    if (size > 0)
+      out << repr(*std::prev(val.end()));
+    out << "}";
+    return out.str();
+  } else if constexpr (is_streamable_v<T>) {
+    std::stringstream out;
+    out << val;
+    return out.str();
+  } else {
+    return "<not representable>";
+  }
+}
+
 namespace {
+
 template <typename T> constexpr bool standard_signed_integer = false;
 template <> constexpr bool standard_signed_integer<signed char> = true;
 template <> constexpr bool standard_signed_integer<short int> = true;
@@ -88,7 +135,8 @@ template <> constexpr bool standard_unsigned_integer<unsigned int> = true;
 template <> constexpr bool standard_unsigned_integer<unsigned long int> = true;
 template <>
 constexpr bool standard_unsigned_integer<unsigned long long int> = true;
-}
+
+} // namespace
 
 template <typename T>
 constexpr bool standard_integer =
@@ -188,10 +236,14 @@ template <class T> struct parse_number<T> {
   }
 };
 
-// template <class T> constexpr auto generic_strtod = nullptr;
-// inline template <> constexpr auto generic_strtod<float> = strtof;
-// inline template <> constexpr auto generic_strtod<double> = strtod;
-// inline template <> constexpr auto generic_strtod<long double> = strtold;
+namespace {
+
+template <class T> constexpr auto generic_strtod = nullptr;
+template <> constexpr auto generic_strtod<float> = strtof;
+template <> constexpr auto generic_strtod<double> = strtod;
+template <> constexpr auto generic_strtod<long double> = strtold;
+
+} // namespace
 
 template <class T> inline auto do_strtod(std::string const &s) -> T {
   if (isspace(static_cast<unsigned char>(s[0])) || s[0] == '+')
@@ -270,7 +322,7 @@ class Argument {
   template <size_t N, size_t... I>
   explicit Argument(std::string_view(&&a)[N], std::index_sequence<I...>)
       : mIsOptional((is_optional(a[I]) || ...)), mIsRequired(false),
-        mIsUsed(false) {
+        mIsRepeatable(false), mIsUsed(false) {
     ((void)mNames.emplace_back(a[I]), ...);
     std::sort(
         mNames.begin(), mNames.end(), [](const auto &lhs, const auto &rhs) {
@@ -288,13 +340,9 @@ public:
     return *this;
   }
 
-  // Force the explicit provision of the argument type.  The T here and the
-  // subsequent get<T>(...) must be the same type, and the resulting
-  // std::bad_any_cast is more time consuming to find and debug that just
-  // providing the exact type in both places.
-  template <typename T>
-  Argument &default_value(std::common_type_t<T> aDefaultValue) {
-    mDefaultValue = std::any(aDefaultValue);
+  template <typename T> Argument &default_value(T &&aDefaultValue) {
+    mDefaultValueRepr = details::repr(aDefaultValue);
+    mDefaultValue = std::forward<T>(aDefaultValue);
     return *this;
   }
 
@@ -325,6 +373,11 @@ public:
               std::string const &opt) mutable {
             return details::apply_plus_one(f, tup, opt);
           });
+    return *this;
+  }
+
+  auto &append() {
+    mIsRepeatable = true;
     return *this;
   }
 
@@ -382,7 +435,7 @@ public:
   template <typename Iterator>
   Iterator consume(Iterator start, Iterator end,
                    std::string_view usedName = {}) {
-    if (mIsUsed) {
+    if (!mIsRepeatable && mIsUsed) {
       throw std::runtime_error("Duplicate argument");
     }
     mIsUsed = true;
@@ -429,7 +482,7 @@ public:
   void validate() const {
     if (auto expected = maybe_nargs()) {
       if (mIsOptional) {
-        if (mIsUsed && mValues.size() != *expected &&
+        if (mIsUsed && mValues.size() != *expected && !mIsRepeatable &&
             !mDefaultValue.has_value()) {
           std::stringstream stream;
           stream << mUsedName << ": expected " << *expected << " argument(s). "
@@ -451,8 +504,10 @@ public:
       } else {
         if (mValues.size() != expected && !mDefaultValue.has_value()) {
           std::stringstream stream;
-          stream << mUsedName << ": expected " << *expected << " argument(s). "
-                 << mValues.size() << " provided.";
+          if (!mUsedName.empty())
+            stream << mUsedName << ": ";
+          stream << *expected << " argument(s) expected. " << mValues.size()
+                 << " provided.";
           throw std::runtime_error(stream.str());
         }
       }
@@ -480,8 +535,15 @@ public:
     std::copy(std::begin(argument.mNames), std::end(argument.mNames),
               std::ostream_iterator<std::string>(nameStream, " "));
     stream << nameStream.str() << "\t" << argument.mHelp;
-    if (argument.mIsRequired)
-      stream << "[Required]";
+    if (argument.mDefaultValue.has_value()) {
+      if (!argument.mHelp.empty())
+        stream << " ";
+      stream << "[default: " << argument.mDefaultValueRepr << "]";
+    } else if (argument.mIsRequired) {
+      if (!argument.mHelp.empty())
+        stream << " ";
+      stream << "[required]";
+    }
     stream << "\n";
     return stream;
   }
@@ -566,8 +628,8 @@ private:
 
     // precondition: we have consumed or will consume at least one digit
     auto consume_digits = [=](std::string_view s) {
-      auto it = std::find_if_not(begin(s), end(s), is_digit);
-      return s.substr(it - begin(s));
+      auto it = std::find_if_not(std::begin(s), std::end(s), is_digit);
+      return s.substr(it - std::begin(s));
     };
 
     switch (lookahead(s)) {
@@ -723,7 +785,7 @@ private:
 
     T tResult;
     std::transform(
-        begin(aOperand), end(aOperand), std::back_inserter(tResult),
+        std::begin(aOperand), std::end(aOperand), std::back_inserter(tResult),
         [](const auto &value) { return std::any_cast<ValueType>(value); });
     return tResult;
   }
@@ -732,6 +794,7 @@ private:
   std::string_view mUsedName;
   std::string mHelp;
   std::any mDefaultValue;
+  std::string mDefaultValueRepr;
   std::any mImplicitValue;
   using valued_action = std::function<std::any(const std::string &)>;
   using void_action = std::function<void(const std::string &)>;
@@ -740,17 +803,24 @@ private:
       [](const std::string &aValue) { return aValue; }};
   std::vector<std::any> mValues;
   int mNumArgs = 1;
-  bool mIsOptional : 1;
-  bool mIsRequired : 1;
-  bool mIsUsed : 1; // True if the optional argument is used by user
+  bool mIsOptional : true;
+  bool mIsRequired : true;
+  bool mIsRepeatable : true;
+  bool mIsUsed : true; // True if the optional argument is used by user
 };
 
 class ArgumentParser {
 public:
-  explicit ArgumentParser(std::string aProgramName = {})
-      : mProgramName(std::move(aProgramName)) {
-    add_argument("-h", "--help")
-        .help("show this help message and exit")
+  explicit ArgumentParser(std::string aProgramName = {},
+                          std::string aVersion = "1.0")
+      : mProgramName(std::move(aProgramName)), mVersion(std::move(aVersion)) {
+    add_argument("-h", "--help").help("shows help message and exits").nargs(0);
+#ifndef ARGPARSE_LONG_VERSION_ARG_ONLY
+    add_argument("-v", "--version")
+#else
+	add_argument("--version")
+#endif
+        .help("prints version information and exits")
         .nargs(0);
   }
 
@@ -761,10 +831,10 @@ public:
       : mProgramName(other.mProgramName),
         mPositionalArguments(other.mPositionalArguments),
         mOptionalArguments(other.mOptionalArguments) {
-    for (auto it = begin(mPositionalArguments); it != end(mPositionalArguments);
+    for (auto it = std::begin(mPositionalArguments); it != std::end(mPositionalArguments);
          ++it)
       index_argument(it);
-    for (auto it = begin(mOptionalArguments); it != end(mOptionalArguments);
+    for (auto it = std::begin(mOptionalArguments); it != std::end(mOptionalArguments);
          ++it)
       index_argument(it);
   }
@@ -792,7 +862,8 @@ public:
 
   // Parameter packed add_parents method
   // Accepts a variadic number of ArgumentParser objects
-  template <typename... Targs> void add_parents(const Targs &... Fargs) {
+  template <typename... Targs>
+  ArgumentParser &add_parents(const Targs &... Fargs) {
     for (const ArgumentParser &tParentParser : {std::ref(Fargs)...}) {
       for (auto &tArgument : tParentParser.mPositionalArguments) {
         auto it =
@@ -805,14 +876,17 @@ public:
         index_argument(it);
       }
     }
+    return *this;
   }
 
-  void add_description(std::string aDescription) {
+  ArgumentParser &add_description(std::string aDescription) {
     mDescription = std::move(aDescription);
+    return *this;
   }
 
-  void add_epilog(std::string aEpilog) {
+  ArgumentParser &add_epilog(std::string aEpilog) {
     mEpilog = std::move(aEpilog);
+    return *this;
   }
 
   /* Call parse_args_internal - which does all the work
@@ -840,19 +914,9 @@ public:
    * @throws std::logic_error if the option has no value
    * @throws std::bad_any_cast if the option is not of type T
    */
-  template <typename T = std::string> T get(std::string_view aArgumentName) {
-    try {
-      return (*this)[aArgumentName].get<T>();
-    }
-    catch (std::logic_error& e)
-    {
-        throw std::logic_error(std::string(e.what()) + " of option \"" + std::string{aArgumentName} + "\"");
-    }
-    catch (std::bad_any_cast& e)
-    {
-        // Ugh, cannot seem to construct another bad_any_cast.
-        throw std::logic_error(std::string(e.what()) + " of option \"" + std::string{aArgumentName} + "\"");
-    }
+  template <typename T = std::string>
+  T get(std::string_view aArgumentName) const {
+    return (*this)[aArgumentName].get<T>();
   }
 
   /* Getter for options without default values.
@@ -865,16 +929,23 @@ public:
     return (*this)[aArgumentName].present<T>();
   }
 
+  /* Getter that returns true for user-supplied options. Returns false if not
+   * user-supplied, even with a default value.
+   */
+  auto is_used(std::string_view aArgumentName) const {
+    return (*this)[aArgumentName].mIsUsed;
+  }
+
   /* Indexing operator. Return a reference to an Argument object
    * Used in conjuction with Argument.operator== e.g., parser["foo"] == true
    * @throws std::logic_error in case of an invalid argument name
    */
-  Argument &operator[](std::string_view aArgumentName) {
+  Argument &operator[](std::string_view aArgumentName) const {
     auto tIterator = mArgumentMap.find(aArgumentName);
     if (tIterator != mArgumentMap.end()) {
       return *(tIterator->second);
     }
-    throw std::logic_error("No argument \"" + std::string{aArgumentName} + "\"");
+    throw std::logic_error("No such argument");
   }
 
   // Print help message
@@ -890,7 +961,7 @@ public:
       }
       stream << "\n\n";
 
-      if(!parser.mDescription.empty())
+      if (!parser.mDescription.empty())
         stream << parser.mDescription << "\n\n";
 
       if (!parser.mPositionalArguments.empty())
@@ -910,7 +981,7 @@ public:
         stream << mOptionalArgument;
       }
 
-      if(!parser.mEpilog.empty())
+      if (!parser.mEpilog.empty())
         stream << parser.mEpilog << "\n\n";
     }
 
@@ -962,6 +1033,11 @@ private:
         // the first optional argument is --help
         if (tArgument == mOptionalArguments.begin()) {
           std::cout << *this;
+          std::exit(0);
+        }
+        // the second optional argument is --version
+        else if (tArgument == std::next(mOptionalArguments.begin(), 1)) {
+          std::cout << mVersion << "\n";
           std::exit(0);
         }
 
@@ -1020,6 +1096,7 @@ private:
   }
 
   std::string mProgramName;
+  std::string mVersion;
   std::string mDescription;
   std::string mEpilog;
   std::list<Argument> mPositionalArguments;

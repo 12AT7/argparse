@@ -1,5 +1,4 @@
 cmake_minimum_required(VERSION 3.6)
-project(ARGPARSE)
 
 if(MSVC)
   # Force to always compile with W4
@@ -26,19 +25,23 @@ endif()
 file(GLOB ARGPARSE_TEST_SOURCES
     main.cpp
     test_actions.cpp
+    test_append.cpp
     test_compound_arguments.cpp
     test_container_arguments.cpp
     test_help.cpp
     test_invalid_arguments.cpp
+    test_is_used.cpp
     test_issue_37.cpp
     test_negative_numbers.cpp
     test_optional_arguments.cpp
     test_parent_parsers.cpp
     test_parse_args.cpp
     test_positional_arguments.cpp
+    test_repr.cpp
     test_required_arguments.cpp
     test_scan.cpp
     test_value_semantics.cpp
+    test_version.cpp
 )
 set_source_files_properties(main.cpp
     PROPERTIES

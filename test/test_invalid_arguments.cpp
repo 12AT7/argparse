@@ -33,8 +33,9 @@ TEST_CASE("Parse unknown optional argument" *
 
   bfm.add_argument("-m", "--mem")
     .default_value(64ULL)
-    .action([](const std::string& val) { return std::stoull(val); })
+    .scan<'u', unsigned long long>()
     .help("memory in MB to give the VMM when loading");
 
-  REQUIRE_THROWS(bfm.parse_args({ "./test.exe", "-om" }));
+  REQUIRE_THROWS_WITH_AS(bfm.parse_args({"./test.exe", "-om"}),
+                         "Unknown argument: -om", std::runtime_error);
 }
